@@ -58,10 +58,7 @@
     </div>
 
     <div class="tldr">
-      <strong>TL;DR</strong> &mdash; VecSet latent tokens secretly remember <em>where</em> they live.
-      Position Forcing decodes those positions from the predicted clean latent mid-denoising,
-      quantizes them coarse&rarr;fine on a noise-dependent grid, and feeds them back through RoPE &mdash;
-      giving a <em>single-stage</em> model the explicit spatial guidance that used to require a second generation stage.
+      <strong>TL;DR</strong> &mdash; Position Forcing improves single-stage 3D generation by recovering token positions from geometry latents and using them as coarse-to-fine spatial self-conditioning during denoising.
     </div>
   </div>
 </header>
@@ -92,9 +89,7 @@
   <div class="wrap">
     <h2 class="center">The generation process, step by step</h2>
     <p class="sub center">
-      One 50-step sampling trajectory on a real case. The positions are sampled from the actual generated asset and
-      quantized with the paper's own schedule, shown against the final mesh and its conditioning image &mdash;
-      press play and watch the spatial guidance sharpen from a single cell to full resolution.
+      One 50-step sampling trajectory on a real case. Press play and watch the spatial guidance sharpen from a single cell to full resolution.
     </p>
 
     <div class="player">
@@ -192,7 +187,7 @@
         </svg>
 
         <ol class="tr-steps">
-          <li id="f1"><b>Predict velocity</b> at z<sub>t</sub> using the previous step's positional conditions</li>
+          <li id="f1"><b>Predict velocity</b> at z<sub>t</sub> using the previous step's position</li>
           <li id="f2"><b>Invert the flow path</b> to a clean estimate ẑ<sub>0</sub></li>
           <li id="f3"><b>Decode positions</b> P<sub>0|t</sub> from that clean estimate</li>
           <li id="f4"><b>Quantize</b> at the next step's resolution R(t&minus;1)</li>
@@ -257,9 +252,7 @@
   <div class="wrap">
     <h2>The observation that makes it possible</h2>
     <p class="sub">
-      In a VecSet VAE with point queries, every latent token is built from a spatial query &mdash; and that
-      correspondence <em>survives encoding</em>. Give the same latents a second decoder and the query positions come
-      straight back out.
+      In a VecSet VAE with point queries, every latent token is built from a spatial query &mdash; and that correspondence <em>survives encoding</em>.
     </p>
     <figure class="fig">
       <img src="static/images/overview.webp" alt="Our observation and positional conditioning designs">
@@ -385,7 +378,7 @@
       <div>
         <h3>Joint training &rarr; robust position recovery</h3>
         <p class="tiny">Accuracy (%) = fraction of predicted positions falling in the same cell as their query position
-          on a $128^3$ grid. Joint finetuning is what keeps positions readable once noise enters.</p>
+          on a $128^3$ grid.</p>
         <div class="tbl-wrap">
           <table class="tbl sm">
             <thead><tr><th>Training strategy</th><th class="c">0%</th><th class="c">10%</th><th class="c">20%</th><th class="c">30%</th></tr></thead>
@@ -472,7 +465,7 @@
     pos = zeros_like_positions(z)
 
     <span class="k">for</span> t, t_next <span class="k">in</span> consecutive_pairs(times):
-        <span class="c"># Predict velocity using current position conditions</span>
+        <span class="c"># Predict velocity using current position</span>
         v = dit_cfg(z, t, image_cond, rope_idx=pos)
 
         <span class="c"># Predict clean latents and recover token positions</span>
@@ -509,10 +502,8 @@
 <footer class="foot">
   <div class="wrap">
     <p>Project page for <b>Position Forcing: Self-Conditioning 3D Generation</b>.
-      Figures and numbers are taken from the paper source.</p>
-    <p class="tiny">The trajectory viewer quantizes surface samples of a real generated asset with the paper's
-      resolution schedule (Eq. 8); it illustrates how the guidance refines rather than replaying the latents of one
-      specific model run. Website template inspired by
+    </p>
+    <p class="tiny">Website template inspired by
       <a href="https://nerfies.github.io">Nerfies</a>, released under CC BY-SA 4.0.</p>
   </div>
 </footer>
