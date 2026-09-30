@@ -70,7 +70,6 @@ async function boot() {
   const elStep = document.getElementById('ro-step');
   const elT = document.getElementById('ro-t');
   const elRes = document.getElementById('ro-res');
-  const elCells = document.getElementById('ro-cells');
   const elStgRes = document.getElementById('stage-res');
   const scrub = document.getElementById('scrub');
   const playBtn = document.getElementById('play');
@@ -338,7 +337,6 @@ async function boot() {
     elStep.textContent = s.i + ' / ' + STEPS;
     elT.textContent = s.t.toFixed(3);
     elRes.textContent = String(s.R);
-    elCells.textContent = q.n.toLocaleString('en-US');
     elStgRes.textContent = 'R = ' + s.R;
     if (scrub.value !== String(cur)) scrub.value = String(cur);
 
@@ -423,9 +421,8 @@ async function boot() {
   requestAnimationFrame(tick);
 
   if ('IntersectionObserver' in window) {
-    let fired = false;
     new IntersectionObserver((ents) => {
-      ents.forEach((en) => { if (en.isIntersecting && !fired) { fired = true; setPlaying(true); } });
+      ents.forEach((en) => { if (en.isIntersecting) controls.autoRotate = true; });
     }, { threshold: 0.4 }).observe(document.getElementById('process'));
   }
 }
