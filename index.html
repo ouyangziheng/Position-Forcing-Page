@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Position Forcing: Self-Conditioning 3D Generation</title>
+<meta name="description" content="Position Forcing — a position-based self-conditioning framework for single-stage 3D generation. Recovers token positions from predicted clean latents and feeds progressively quantized positional encodings back into the diffusion Transformer.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="static/css/style.css">
+<script>
+  MathJax = { tex: { inlineMath: [['$','$']], displayMath: [['$$','$$']] }, options: { skipHtmlTags: ['script','noscript','style','textarea','pre'] } };
+</script>
+<script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+</head>
+<body>
+
+<!-- ============================ HERO ============================ -->
+<header class="hero">
+  <div class="hero-glow"></div>
+  <div class="wrap">
+    <div class="badge">Single-Stage 3D Generation &middot; Self-Conditioning</div>
+    <h1 class="title">Position Forcing:<br><span class="grad">Self-Conditioning 3D Generation</span></h1>
+
+    <div class="authors">
+      <span><a href="#">Ziheng Ouyang</a><sup>1,2</sup></span>
+      <span><a href="#">Zeqiang Lai</a><sup>2,3&dagger;</sup></span>
+      <span><a href="#">Jiarui Chen</a><sup>2,4,5</sup></span>
+      <span><a href="#">Jiangshan Wang</a><sup>2,3</sup></span>
+      <span><a href="#">Yuhao Wan</a><sup>1</sup></span>
+      <span><a href="#">Jingbo Gong</a><sup>1</sup></span>
+      <span><a href="#">Xiangyu Yue</a><sup>3</sup></span>
+      <span><a href="#">Hengshuang Zhao</a><sup>6</sup></span>
+      <span><a href="#">Qibin Hou</a><sup>1&Dagger;</sup></span>
+      <span><a href="#">Chunchao Guo</a><sup>2&Dagger;</sup></span>
+    </div>
+
+    <div class="affils">
+      <span><sup>1</sup>VCIP, Nankai University</span>
+      <span><sup>2</sup>Tencent Hunyuan</span>
+      <span><sup>3</sup>MMLab, CUHK</span>
+      <span><sup>4</sup>Fudan University</span>
+      <span><sup>5</sup>Shanghai Innovation Institute</span>
+      <span><sup>6</sup>HKU</span>
+    </div>
+    <div class="notes"><sup>&dagger;</sup>Project lead &nbsp;&middot;&nbsp; <sup>&Dagger;</sup>Corresponding author</div>
+
+    <div class="links">
+      <a class="btn btn-dark" href="#process">▶ Watch the generation process</a>
+      <a class="btn" href="#assets">Interactive 3D</a>
+      <a class="btn" href="#method">Method</a>
+      <a class="btn" href="#results">Results</a>
+      <a class="btn" href="#bibtex">BibTeX</a>
+    </div>
+
+    <div class="tldr">
+      <strong>TL;DR</strong> &mdash; VecSet latent tokens secretly remember <em>where</em> they live.
+      Position Forcing decodes those positions from the predicted clean latent mid-denoising,
+      quantizes them coarse&rarr;fine on a noise-dependent grid, and feeds them back through RoPE &mdash;
+      giving a <em>single-stage</em> model the explicit spatial guidance that used to require a second generation stage.
+    </div>
+  </div>
+</header>
+
+<!-- ============================ ABSTRACT ============================ -->
+<section class="sec">
+  <div class="wrap narrow">
+    <h2>Abstract</h2>
+    <p class="lead">
+      Recent single-stage 3D generative models commonly adopt VecSet representations, encoding 3D shapes as unordered
+      sets of latent tokens. However, compared with two-stage methods that provide explicit positional guidance, these
+      models must implicitly infer token positions throughout denoising, limiting their generation quality.
+      We observe that, despite the absence of explicit positional conditioning, VecSet tokens retain recoverable
+      spatial correspondences. Building on this observation, we propose <strong>Position Forcing</strong>, a
+      position-based self-conditioning framework. During denoising, Position Forcing recovers token positions from the
+      current clean latent estimate, quantizes them at progressively finer resolutions according to the denoising
+      stage, and feeds the resulting positional encodings back into the diffusion Transformer. This progressively
+      refined positional feedback provides spatial guidance at a granularity appropriate to each denoising stage,
+      guiding shape generation along a coarse-to-fine trajectory and substantially improving generation quality
+      without a separate position generation stage. Experiments demonstrate that Position Forcing achieves strong
+      performance among single-stage 3D generative methods and outperforms several competitive multi-stage approaches.
+    </p>
+  </div>
+</section>
+
+<!-- ============================ THE PROCESS PLAYER ============================ -->
+<section class="sec sec-dark" id="process">
+  <div class="wrap">
+    <h2 class="center">The generation process, step by step</h2>
+    <p class="sub center">
+      One 50-step sampling trajectory on a real case. The positions are sampled from the actual generated asset and
+      quantized with the paper's own schedule, shown against the final mesh and its conditioning image &mdash;
+      press play and watch the spatial guidance sharpen from a single cell to full resolution.
+    </p>
+
+    <div class="player">
+      <!-- live 3D canvas driven by the real generated asset -->
+      <div class="stage">
+        <div class="stage-head">
+          <span class="tag">Live trajectory</span>
+          <span class="stage-title">Positional guidance at <span class="mono" id="stage-res">R = 1</span></span>
+        </div>
+        <div class="stage-body">
+          <div id="proc-view" class="proc-view"></div>
+          <figure class="proc-input">
+            <img src="static/demo/input.webp" alt="Conditioning image for the demonstrated case">
+            <figcaption>input image</figcaption>
+          </figure>
+        </div>
+        <div class="stage-foot">
+          <div class="layers">
+            <span class="layers-lb">show</span>
+            <button class="chip sm on" data-layer="cells">quantized positions</button>
+            <button class="chip sm on" data-layer="mesh">final mesh</button>
+          </div>
+          <div class="readout">
+            <div><span>step</span><b id="ro-step">0 / 50</b></div>
+            <div><span>timestep <em>t</em></span><b id="ro-t">1.000</b></div>
+            <div><span>grid <em>R(t)</em></span><b id="ro-res">1</b></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- animated trajectory diagram (Clean-State Conditioning) -->
+      <div class="loop">
+        <div class="loop-head">Clean-state conditioning &mdash; one step</div>
+
+        <svg class="traj" id="traj" viewBox="0 0 360 180" role="img"
+             aria-label="Animated trajectory diagram of clean-state conditioning">
+          <defs>
+            <!-- Markers do NOT inherit `color` from the referencing path, so
+                 currentColor resolves against <defs> and paints the wrong
+                 fill. Each state gets its own marker with an explicit fill.
+                 markerUnits keeps the head a fixed size rather than scaling
+                 with stroke-width. -->
+            <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5"
+                    markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse"
+                    orient="auto">
+              <path d="M 0 1 L 9.5 5 L 0 9 z" fill="#9b9487"/>
+            </marker>
+            <marker id="ah-lit" viewBox="0 0 10 10" refX="9" refY="5"
+                    markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse"
+                    orient="auto">
+              <path d="M 0 1 L 9.5 5 L 0 9 z" fill="#8a6a4f"/>
+            </marker>
+          </defs>
+
+          <!-- main latent track: z1 ⇢ zt → zt-1 ⇢ z0 -->
+          <g class="tr-track">
+            <path class="tr-dash" d="M 38 44 H 107" marker-end="url(#ah)"/>
+            <path class="tr-solid" id="e-main" d="M 131 44 H 223" marker-end="url(#ah)"/>
+            <path class="tr-dash" d="M 248 44 H 319" marker-end="url(#ah)"/>
+          </g>
+
+          <!-- zt ↓ predicted clean latent -->
+          <path class="tr-dashed-v" id="e-drop" d="M 119 56 V 108" marker-end="url(#ah)"/>
+          <!-- ẑ0 → P0|t -->
+          <path class="tr-dashed-h" id="e-pos" d="M 132 120 H 223" marker-end="url(#ah)"/>
+          <!-- P0|t ↑ zt-1, injected through RoPE -->
+          <path class="tr-rope" id="e-rope" d="M 235 108 V 56" marker-end="url(#ah)"/>
+
+          <!-- nodes -->
+          <g class="tr-nodes">
+            <circle class="nd" id="n-z1"   cx="26"  cy="44"  r="8"/>
+            <circle class="nd" id="n-zt"   cx="119" cy="44"  r="9"/>
+            <circle class="nd" id="n-ztm1" cx="235" cy="44"  r="9"/>
+            <circle class="nd" id="n-z0"   cx="330" cy="44"  r="8"/>
+            <circle class="nd nd-alt" id="n-z0h"  cx="119" cy="120" r="9"/>
+            <circle class="nd nd-pos" id="n-p0t"  cx="235" cy="120" r="9"/>
+          </g>
+
+          <!-- labels -->
+          <g class="tr-lbl">
+            <text x="26"  y="26">z₁</text>
+            <text x="119" y="26">z<tspan class="sb">t</tspan></text>
+            <text x="235" y="26">z<tspan class="sb">t−1</tspan></text>
+            <text x="330" y="26">z₀</text>
+            <text x="119" y="148" class="mid">ẑ₀</text>
+            <text x="235" y="148" class="mid">P<tspan class="sb">0|t</tspan></text>
+            <text x="250" y="86" class="side">RoPE</text>
+          </g>
+
+          <!-- travelling pulses; the final phase runs both at once so the
+               Euler update and the RoPE injection are seen converging on
+               z_{t-1} together -->
+          <circle class="tr-pulse" id="pulse" r="4" cx="119" cy="44"/>
+          <circle class="tr-pulse" id="pulse2" r="4" cx="119" cy="44"/>
+        </svg>
+
+        <ol class="tr-steps">
+          <li id="f1"><b>Predict velocity</b> at z<sub>t</sub> using the previous step's positional conditions</li>
+          <li id="f2"><b>Invert the flow path</b> to a clean estimate ẑ<sub>0</sub></li>
+          <li id="f3"><b>Decode positions</b> P<sub>0|t</sub> from that clean estimate</li>
+          <li id="f4"><b>Quantize</b> at the next step's resolution R(t&minus;1)</li>
+          <li id="f5"><b>Inject through RoPE</b> and take the Euler step to z<sub>t&minus;1</sub></li>
+        </ol>
+        <div class="loop-back"><span>↻</span> the recovered positions condition the next step</div>
+      </div>
+    </div>
+
+    <!-- timeline -->
+    <div class="timeline">
+      <div class="tl-controls">
+        <button id="play" class="ctrl ctrl-main">▶ Play</button>
+        <button id="reset" class="ctrl">↺ Reset</button>
+        <div class="spd">
+          <span>speed</span>
+          <button class="ctrl sm spd-btn" data-spd="0.5">0.5&times;</button>
+          <button class="ctrl sm spd-btn is-on" data-spd="1">1&times;</button>
+          <button class="ctrl sm spd-btn" data-spd="2">2&times;</button>
+        </div>
+        <label class="tog"><input type="checkbox" id="spin" checked> auto-rotate</label>
+      </div>
+      <div class="tl-track">
+        <input type="range" id="scrub" min="0" max="50" value="0" step="1">
+        <div id="bands" class="tl-bands"></div>
+        <div class="tl-axis"><span>t = 1 &nbsp;(pure noise)</span><span>t = 0 &nbsp;(clean geometry)</span></div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============================ INTERACTIVE 3D GALLERY ============================ -->
+<section class="sec" id="assets">
+  <div class="wrap">
+    <h2>Interactive results</h2>
+    <p class="sub">
+      Every mesh below is the real generated <span class="mono">.glb</span>, shaded by surface normal so the geometry
+      reads without texture hiding it. Page through all 48 results &mdash; the conditioning image is inset in
+      each corner.
+    </p>
+
+    <div class="gal-bar" id="gal-bar">
+      <button class="pg-btn" id="pg-prev" aria-label="Previous page">&#8249;</button>
+      <span class="gal-count" id="gal-count"></span>
+      <button class="pg-btn" id="pg-next" aria-label="Next page">&#8250;</button>
+    </div>
+    <div class="gal" id="gal">
+      <p class="tiny">Loading cases&hellip;</p>
+    </div>
+    <div class="gal-pager" id="gal-pager"></div>
+    <p class="tiny" style="margin-top:20px">
+      Grid cards show a 500k-triangle preview so a page stays responsive; opening a card loads the full source
+      triangulation (0.8&ndash;3.4 M triangles), which is also what the download button gives you. Both are
+      Draco-compressed at 18 bits &mdash; lossless in practice at this density.
+    </p>
+  </div>
+</section>
+
+<!-- ============================ OBSERVATION ============================ -->
+<section class="sec sec-tint" id="observation">
+  <div class="wrap">
+    <h2>The observation that makes it possible</h2>
+    <p class="sub">
+      In a VecSet VAE with point queries, every latent token is built from a spatial query &mdash; and that
+      correspondence <em>survives encoding</em>. Give the same latents a second decoder and the query positions come
+      straight back out.
+    </p>
+    <figure class="fig">
+      <img src="static/images/overview.webp" alt="Our observation and positional conditioning designs">
+      <figcaption>
+        <b>(I)</b> Latents decode into <em>both</em> shape geometry and the spatial positions associated with each token.
+        <b>(II)</b> <b>(a)</b> VecSet uses no explicit positional conditioning;
+        <b>(b)</b> VoxSet and two-stage pipelines rely on positions established beforehand;
+        <b>(c)</b> a naive design recovers positions from the current <em>noisy</em> state;
+        <b>(d)</b> <b>Position Forcing</b> recovers them from the predicted <em>clean</em> state and applies
+        progressive quantization for coarse-to-fine guidance.
+      </figcaption>
+    </figure>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-k">99.9%</div>
+        <div class="card-v">position recovery on clean latents, after joint finetuning<br><small>fraction of tokens landing in the correct cell of a $128^3$ grid</small></div>
+      </div>
+      <div class="card">
+        <div class="card-k">92.5%</div>
+        <div class="card-v">still correct under 20% noise perturbation<br><small>vs. 23.0% for a frozen VAE — this robustness is what makes mid-denoising feedback usable</small></div>
+      </div>
+      <div class="card">
+        <div class="card-k">1 stage</div>
+        <div class="card-v">no separate structure-generation model<br><small>spatial guidance is produced inside the single denoising trajectory</small></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ METHOD ============================ -->
+<section class="sec" id="method">
+  <div class="wrap">
+    <h2>Method</h2>
+    <figure class="fig">
+      <img src="static/images/method.webp" alt="Position Forcing method overview: Position VAE, Position-Forced DiT, progressive quantization">
+      <figcaption>
+        <b>(a)</b> <b>Position VAE</b> learns latent tokens that preserve geometry–position correspondences.
+        <b>(b)</b> <b>Position-Forced DiT</b> recovers token positions from the predicted clean latents and injects
+        them into subsequent denoising through RoPE.
+        <b>(c)</b> Recovered positions are progressively quantized from coarse to fine as denoising proceeds.
+      </figcaption>
+    </figure>
+
+    <div class="two wide-right">
+      <div class="panel">
+        <h3>Position VAE</h3>
+        <p>A VoxSet VAE augmented with a 4-layer Transformer <em>position decoder</em> $D_{\mathrm{pos}}$, trained in two stages:</p>
+        <ol class="steps">
+          <li><b>Stage I — position learning on frozen latents.</b> The VAE is frozen; only $D_{\mathrm{pos}}$ trains,
+            supervised by a token-wise L1 loss against the jittered query coordinates.
+            $$\mathcal{L}_{\mathrm{pos}}=\tfrac{1}{3N}\textstyle\sum_i\|\widehat{\mathbf{p}}_i-\mathbf{p}_i\|_1$$
+            This leaves the geometry latent space untouched, but accuracy is limited and collapses under noise.</li>
+          <li><b>Stage II — joint position-aware training.</b> Encoder, geometry decoder and position decoder train
+            together, so the latents support reconstruction <em>and</em> position recovery.
+            $$\mathcal{L}_{\mathrm{joint}}=\mathcal{L}_{\mathrm{rec}}+\lambda_{\mathrm{KL}}\mathcal{L}_{\mathrm{KL}}+\lambda_{\mathrm{pos}}\mathcal{L}_{\mathrm{pos}}$$
+            Positions now survive heavy noise — the prerequisite for reading them off an imperfect $\widehat{\mathbf{Z}}_0$.</li>
+        </ol>
+      </div>
+      <div class="panel">
+        <h3>Position-Forced DiT</h3>
+        <p>A FLUX-style rectified-flow Transformer (12 double-stream + 24 single-stream blocks, width 1536) with
+          DINOv2-Giant image conditioning and 3D RoPE carrying the positional guidance.</p>
+        <p><b>Why the clean state?</b> Position predictions from the noisy latent $\mathbf{Z}_t$ are unreliable at high
+          noise, and full-resolution encodings then lock the model onto wrong fine-grained relationships. Position
+          Forcing instead inverts the flow path to a clean estimate first:</p>
+        $$\widehat{\mathbf{Z}}_0=\mathbf{Z}_t-t\widehat{\mathbf{V}}_t,\qquad P_{0\mid t}=D_{\mathrm{pos}}(\widehat{\mathbf{Z}}_0)$$
+        <p><b>Why quantize?</b> Coarse cells at high noise keep the global layout while staying insensitive to
+          positional error; the grid then refines toward local geometry.</p>
+        <p><b>Training vs. inference.</b> Reproducing the feedback during training would require unrolling the
+          trajectory, so training keeps single-timestep sampling and conditions on <em>ground-truth</em> query
+          positions under the same schedule $R(t)$, plus random $\{-1,0,1\}$ cell perturbations for robustness:</p>
+        $$\mathcal{L}_{\mathrm{FM}}=\mathbb{E}\!\left[\left\|v_\theta\!\left(\mathbf{Z}_t,t,\mathbf{c}_I,\operatorname{PE}\!\left(Q_{R(t)}(\mathcal{P})+\boldsymbol{\delta}\right)\right)-(\boldsymbol{\epsilon}-\mathbf{Z}_0)\right\|_F^2\right]$$
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============================ RESULTS ============================ -->
+<section class="sec sec-tint" id="results">
+  <div class="wrap">
+    <h2>Results</h2>
+
+    <h3>Image-conditioned generation</h3>
+    <p class="sub">Position Forcing reaches the best or tied-best score on all four metrics &mdash; ahead of both
+      single-stage and multi-stage baselines.</p>
+    <div class="tbl-wrap">
+      <table class="tbl">
+        <thead><tr><th>Model</th><th class="c">Single stage</th><th class="c">ULIP-T ↑</th><th class="c">ULIP-I ↑</th><th class="c">Uni3D-T ↑</th><th class="c">Uni3D-I ↑</th></tr></thead>
+        <tbody>
+          <tr><td>TRELLIS</td><td class="c x">✗</td><td class="c">0.076</td><td class="c">0.126</td><td class="c">0.249</td><td class="c">0.311</td></tr>
+          <tr><td>TRELLIS 2</td><td class="c x">✗</td><td class="c b">0.077</td><td class="c">0.124</td><td class="c">0.245</td><td class="c">0.317</td></tr>
+          <tr><td>Direct3D-S2</td><td class="c x">✗</td><td class="c">0.074</td><td class="c">0.122</td><td class="c">0.247</td><td class="c">0.314</td></tr>
+          <tr><td>Hi3DGen</td><td class="c x">✗</td><td class="c">0.065</td><td class="c">0.113</td><td class="c">0.252</td><td class="c">0.301</td></tr>
+          <tr class="rule"><td>CraftsMan 1.5</td><td class="c v">✓</td><td class="c">0.074</td><td class="c">0.129</td><td class="c">0.237</td><td class="c">0.298</td></tr>
+          <tr><td>UniLat3D</td><td class="c v">✓</td><td class="c">0.071</td><td class="c">0.119</td><td class="c">0.252</td><td class="c">0.307</td></tr>
+          <tr><td>Hunyuan3D 2.1</td><td class="c v">✓</td><td class="c">0.075</td><td class="c">0.125</td><td class="c">0.250</td><td class="c">0.320</td></tr>
+          <tr class="ours"><td><b>Position Forcing (Ours)</b></td><td class="c v">✓</td><td class="c b">0.077</td><td class="c b">0.130</td><td class="c b">0.257</td><td class="c b">0.321</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="two mt">
+      <div>
+        <h3>Geometry reconstruction</h3>
+        <div class="tbl-wrap">
+          <table class="tbl sm">
+            <thead><tr><th>Method</th><th class="c">Latent size</th><th class="c">CD ↓</th><th class="c">F1 ↑</th></tr></thead>
+            <tbody>
+              <tr><td rowspan="2">TripoSG</td><td class="c mono">64 × 4096</td><td class="c">17.96</td><td class="c">92.33</td></tr>
+              <tr><td class="c mono">64 × 8192</td><td class="c">16.61</td><td class="c">94.19</td></tr>
+              <tr class="rule"><td rowspan="3">Hunyuan3D-2.1</td><td class="c mono">64 × 4096</td><td class="c">9.08</td><td class="c">89.43</td></tr>
+              <tr><td class="c mono">64 × 8192</td><td class="c">8.28</td><td class="c">90.99</td></tr>
+              <tr><td class="c mono">64 × 20480</td><td class="c">7.62</td><td class="c">92.06</td></tr>
+              <tr class="rule ours"><td rowspan="3"><b>Position Forcing</b></td><td class="c mono">64 × 4096</td><td class="c">8.28</td><td class="c">90.74</td></tr>
+              <tr class="ours"><td class="c mono">64 × 8192</td><td class="c">6.37</td><td class="c">93.83</td></tr>
+              <tr class="ours"><td class="c mono">64 × 20480</td><td class="c b">5.39</td><td class="c b">95.38</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <h3>Joint training &rarr; robust position recovery</h3>
+        <p class="tiny">Accuracy (%) = fraction of predicted positions falling in the same cell as their query position
+          on a $128^3$ grid. Joint finetuning is what keeps positions readable once noise enters.</p>
+        <div class="tbl-wrap">
+          <table class="tbl sm">
+            <thead><tr><th>Training strategy</th><th class="c">0%</th><th class="c">10%</th><th class="c">20%</th><th class="c">30%</th></tr></thead>
+            <tbody>
+              <tr><td>Frozen VAE</td><td class="c">67.4</td><td class="c">51.3</td><td class="c">23.0</td><td class="c">6.7</td></tr>
+              <tr class="ours"><td><b>Joint finetuning</b></td><td class="c b">99.9</td><td class="c b">99.7</td><td class="c b">92.5</td><td class="c b">67.3</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <figure class="fig tightfig">
+          <img src="static/images/positionacc.webp" alt="Positional consistency along the sampling trajectory">
+          <figcaption>Positions from the predicted clean latent ($P_{0\mid t}$) agree with the final positions earlier
+            and stay consistent under progressive quantization &mdash; unlike those read from the noisy latent ($P_t$).</figcaption>
+        </figure>
+      </div>
+    </div>
+
+    <p class="tiny mt">
+      For qualitative results, see the <a href="#assets">interactive meshes</a> above &mdash; every case is the real
+      generated asset, rotatable from any angle rather than a fixed render.
+    </p>
+  </div>
+</section>
+
+<!-- ============================ ABLATION ============================ -->
+<section class="sec" id="ablation">
+  <div class="wrap">
+    <h2>Ablations</h2>
+    <p class="sub">Same input, seed and sampling settings throughout. <b>(a)</b> is the VecSet baseline with no
+      positional conditioning; <b>(f)</b> is the full model.</p>
+
+    <div class="tbl-wrap">
+      <table class="tbl abl">
+        <thead><tr><th>Configuration</th><th class="c">(a)</th><th class="c">(b)</th><th class="c">(c)</th><th class="c">(d)</th><th class="c">(e)</th><th class="c ours-h">(f) Ours</th><th class="c">(g)</th></tr></thead>
+        <tbody>
+          <tr><td>Train pos.</td><td class="c">—</td><td class="c">Pred</td><td class="c">Pred</td><td class="c">Pred</td><td class="c">Query</td><td class="c oc">Query</td><td class="c">Query</td></tr>
+          <tr><td>Infer pos.</td><td class="c">—</td><td class="c">Pred</td><td class="c">Pred</td><td class="c">$x_0$</td><td class="c">Pred</td><td class="c oc">$x_0$</td><td class="c">$x_0$</td></tr>
+          <tr><td>Progressive quant.</td><td class="c x">✗</td><td class="c x">✗</td><td class="c v">✓</td><td class="c v">✓</td><td class="c v">✓</td><td class="c oc v">✓</td><td class="c v">✓</td></tr>
+          <tr><td>Resolution</td><td class="c">—</td><td class="c">128</td><td class="c">Prog.</td><td class="c">Prog.</td><td class="c">Prog.</td><td class="c oc">Prog.</td><td class="c">Prog.</td></tr>
+          <tr class="rule"><td>VAE</td><td class="c">VecSet</td><td class="c">Joint</td><td class="c">Joint</td><td class="c">Joint</td><td class="c">Joint</td><td class="c oc">Joint</td><td class="c">Stage-I</td></tr>
+          <tr class="rule"><td>ULIP-T ↑</td><td class="c">0.075</td><td class="c u">0.076</td><td class="c">0.074</td><td class="c">0.075</td><td class="c">0.058</td><td class="c oc b">0.077</td><td class="c u">0.076</td></tr>
+          <tr><td>ULIP-I ↑</td><td class="c">0.125</td><td class="c">0.127</td><td class="c">0.124</td><td class="c">0.126</td><td class="c">0.095</td><td class="c oc b">0.130</td><td class="c u">0.128</td></tr>
+          <tr><td>Uni3D-T ↑</td><td class="c">0.250</td><td class="c">0.247</td><td class="c u">0.256</td><td class="c b">0.257</td><td class="c">0.225</td><td class="c oc b">0.257</td><td class="c">0.248</td></tr>
+          <tr><td>Uni3D-I ↑</td><td class="c">0.320</td><td class="c">0.305</td><td class="c u">0.321</td><td class="c b">0.323</td><td class="c">0.265</td><td class="c oc u">0.321</td><td class="c">0.308</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="tiny">Query / Pred / $x_0$ = ground-truth query positions, predicted positions, and positions
+      recovered from the predicted clean latent. <b>Bold</b> = best, <u>underline</u> = second best.</p>
+  </div>
+</section>
+
+
+
+<!-- ============================ ALGORITHM ============================ -->
+<section class="sec sec-tint" id="algorithm">
+  <div class="wrap">
+    <h2>Algorithm</h2>
+    <p class="sub">Training conditions on ground-truth query positions; inference recovers them from the predicted clean latent and re-quantizes each step.</p>
+    <div class="code">
+<pre><code><span class="c"># Training: use query positions from the frozen encoder</span>
+<span class="k">def</span> <span class="fn">training_loss</span>(point_cloud, image):
+    <span class="k">with</span> no_grad():
+        z0, query_pos = vae.encode(point_cloud)
+        image_cond    = image_encoder(image)
+
+    t, noise = sample_time_and_noise(z0)
+    zt = (<span class="n">1</span> - t) * z0 + t * noise
+
+    <span class="c"># Quantize query positions at the current resolution</span>
+    pos = quantize(query_pos, R(t))
+    v   = dit(zt, t, image_cond, rope_idx=pos)
+
+    <span class="k">return</span> mse(v, noise - z0)
+
+
+<span class="c"># Inference: recover positions from predicted clean latents</span>
+<span class="d">@no_grad()</span>
+<span class="k">def</span> <span class="fn">sample</span>(noise, image, times):
+    z = noise
+    image_cond = image_encoder(image)
+
+    <span class="c"># Initially R = 1: all tokens share the same coordinates</span>
+    pos = zeros_like_positions(z)
+
+    <span class="k">for</span> t, t_next <span class="k">in</span> consecutive_pairs(times):
+        <span class="c"># Predict velocity using current position conditions</span>
+        v = dit_cfg(z, t, image_cond, rope_idx=pos)
+
+        <span class="c"># Predict clean latents and recover token positions</span>
+        z0_pred       = z - t * v
+        predicted_pos = pos_decoder(z0_pred)
+
+        <span class="c"># Prepare position conditions for the next step</span>
+        pos = quantize(predicted_pos, R(t_next))
+
+        <span class="c"># Advance sampling with an Euler update</span>
+        z = z + (t_next - t) * v
+
+    <span class="c"># Decode the generated geometry</span>
+    <span class="k">return</span> mesh_decoder(z)</code></pre>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ BIBTEX ============================ -->
+<section class="sec" id="bibtex">
+  <div class="wrap narrow">
+    <h2>BibTeX</h2>
+    <div class="code bib"><pre><code>@article{ouyang2026positionforcing,
+  title   = {Position Forcing: Self-Conditioning 3D Generation},
+  author  = {Ouyang, Ziheng and Lai, Zeqiang and Chen, Jiarui and
+             Wang, Jiangshan and Wan, Yuhao and Gong, Jingbo and
+             Yue, Xiangyu and Zhao, Hengshuang and Hou, Qibin and
+             Guo, Chunchao},
+  year    = {2026}
+}</code></pre></div>
+  </div>
+</section>
+
+<footer class="foot">
+  <div class="wrap">
+    <p>Project page for <b>Position Forcing: Self-Conditioning 3D Generation</b>.
+      Figures and numbers are taken from the paper source.</p>
+    <p class="tiny">The trajectory viewer quantizes surface samples of a real generated asset with the paper's
+      resolution schedule (Eq. 8); it illustrates how the guidance refines rather than replaying the latents of one
+      specific model run. Website template inspired by
+      <a href="https://nerfies.github.io">Nerfies</a>, released under CC BY-SA 4.0.</p>
+  </div>
+</footer>
+
+<script type="module" src="static/js/process.js"></script>
+<script type="module" src="static/js/gallery.js"></script>
+</body>
+</html>
